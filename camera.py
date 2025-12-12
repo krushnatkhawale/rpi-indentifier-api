@@ -338,7 +338,6 @@ class Camera:
                 self.hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
             except Exception:
                 self.hog = None
->>>>>>> refs/remotes/origin/main
 
     def _capture_loop(self):
         while self.running:
