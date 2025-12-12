@@ -1,0 +1,53 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>RPI Identifier - Live</title>
+    <style>
+      body { font-family: sans-serif; margin: 20px }
+      #video { border: 1px solid #ccc }
+      button { margin-right: 10px }
+    </style>
+  </head>
+  <body>
+    <h1>Live Camera</h1>
+    <div>
+      <button id="startBtn">Start Recording</button>
+      <button id="stopBtn" disabled>Stop Recording</button>
+      <a href="/recordings">Recordings</a>
+    </div>
+    <div>
+      <img id="video" src="/video_feed" width="640" />
+    </div>
+
+    <script>
+      const startBtn = document.getElementById('startBtn')
+      const stopBtn = document.getElementById('stopBtn')
+
+      startBtn.addEventListener('click', async () => {
+        startBtn.disabled = true
+        const res = await fetch('/start_recording', {method: 'POST'})
+        const j = await res.json()
+        if (j.ok) {
+          stopBtn.disabled = false
+        } else {
+          alert('Failed to start recording')
+          startBtn.disabled = false
+        }
+      })
+
+      stopBtn.addEventListener('click', async () => {
+        stopBtn.disabled = true
+        const res = await fetch('/stop_recording', {method: 'POST'})
+        const j = await res.json()
+        if (j.ok) {
+          alert('Recording saved: ' + j.meta.filename)
+          startBtn.disabled = false
+        } else {
+          alert('Failed to stop: ' + (j.error||'unknown'))
+          stopBtn.disabled = false
+        }
+      })
+    </script>
+  </body>
+  </html>

@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>RPI Identifier - Recordings</title>
+    <style>body{font-family:sans-serif;margin:20px}video{max-width:100%}</style>
+  </head>
+  <body>
+    <h1>Recordings</h1>
+    <a href="/">Back to Live</a>
+    <ul>
+      {% for r in recordings %}
+      <li>
+        <strong>{{ r.filename }}</strong>
+        {% if r.meta %}
+          - duration: {{ (r.meta.duration|default(0))|round(1) }}s
+        {% endif %}
+        <div>
+          <video controls src="/recordings/{{ r.filename }}"></video>
+        </div>
+        {% if r.meta %}
+        <pre>{{ r.meta | tojson(indent=2) }}</pre>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </body>
+  </html>
