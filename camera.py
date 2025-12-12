@@ -56,6 +56,13 @@ class Camera:
     def _ensure_model(self):
         if os.path.exists(MODEL_PROTO) and os.path.exists(MODEL_WEIGHTS):
             self.net = cv2.dnn.readNetFromCaffe(MODEL_PROTO, MODEL_WEIGHTS)
+        else:
+            # Setup a fallback HOG + SVM person detector for basic detection when Caffe model is unavailable
+            try:
+                self.hog = cv2.HOGDescriptor()
+                self.hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
+            except Exception:
+                self.hog = None
 
     def _capture_loop(self):
         while self.running:
@@ -96,8 +103,16 @@ class Camera:
                     cv2.putText(annotated, f"{label}: {confidence:.2f}", (startX, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                     detections_count[label] += 1
         else:
-            # No model: annotate that detection is disabled
-            cv2.putText(annotated, "No detection model loaded", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            # If Caffe model not available, try HOG person detector as a fallback
+            if hasattr(self, 'hog') and self.hog is not None:
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                rects, weights = self.hog.detectMultiScale(gray, winStride=(8, 8), padding=(8, 8), scale=1.05)
+                for (x, y, w_rec, h_rec), weight in zip(rects, weights):
+                    cv2.rectangle(annotated, (x, y), (x + w_rec, y + h_rec), (255, 0, 0), 2)
+                    cv2.putText(annotated, f"person: {float(weight):.2f}", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+                    detections_count['person'] += 1
+            else:
+                cv2.putText(annotated, "No detection model loaded", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
         return annotated, detections_count
 
