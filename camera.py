@@ -329,15 +329,27 @@ class Camera:
         self.thread.start()
 
     def _ensure_model(self):
-        if os.path.exists(MODEL_PROTO) and os.path.exists(MODEL_WEIGHTS):
-            self.net = cv2.dnn.readNetFromCaffe(MODEL_PROTO, MODEL_WEIGHTS)
-        else:
-            # Setup a fallback HOG + SVM person detector for basic detection when Caffe model is unavailable
+        """Try to load a TFLite model. If not available, prepare HOG fallback."""
+        if Interpreter is not None and os.path.exists(TFLITE_MODEL):
             try:
-                self.hog = cv2.HOGDescriptor()
-                self.hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
-            except Exception:
-                self.hog = None
+                self.interpreter = Interpreter(model_path=TFLITE_MODEL)
+                self.interpreter.allocate_tensors()
+                self.input_details = self.interpreter.get_input_details()
+                self.output_details = self.interpreter.get_output_details()
+                print("Loaded TFLite model:", TFLITE_MODEL)
+                return
+            except Exception as e:
+                print("Failed to initialize TFLite interpreter:", e)
+                self.interpreter = None
+
+        # HOG fallback
+        try:
+            self.hog = cv2.HOGDescriptor()
+            self.hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
+            print("Using HOG fallback detector")
+        except Exception as e:
+            print("HOG fallback unavailable:", e)
+            self.hog = None
 
     def _capture_loop(self):
         while self.running:
