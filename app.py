@@ -28,8 +28,12 @@ def video_feed():
 
 @app.route('/start_recording', methods=['POST'])
 def start_recording():
-    success = camera.start_recording()
-    return jsonify({'ok': bool(success)})
+    res = camera.start_recording()
+    # camera.start_recording now returns a dict with at least 'ok' key
+    if isinstance(res, dict):
+        return jsonify(res)
+    # legacy boolean
+    return jsonify({'ok': bool(res)})
 
 
 @app.route('/stop_recording', methods=['POST'])
@@ -63,6 +67,16 @@ def recordings():
 @app.route('/recordings/<path:filename>')
 def recordings_file(filename):
     return send_from_directory('recordings', filename)
+
+
+@app.route('/status')
+def status():
+    info = {
+        'recording': bool(camera.recording),
+        'frame_available': camera.frame is not None,
+        'detector': 'tflite' if getattr(camera, 'interpreter', None) is not None else ('hog' if getattr(camera, 'hog', None) is not None else 'none')
+    }
+    return jsonify(info)
 
 
 if __name__ == '__main__':

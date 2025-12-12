@@ -31,7 +31,8 @@
         if (j.ok) {
           stopBtn.disabled = false
         } else {
-          alert('Failed to start recording')
+          const msg = j.message || j.error || 'Failed to start recording'
+          alert(msg)
           startBtn.disabled = false
         }
       })

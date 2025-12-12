@@ -232,7 +232,7 @@ class Camera:
     def start_recording(self, out_path=None, fps=20):
         with self.lock:
             if self.recording:
-                return False
+                return {"ok": False, "error": "already_recording"}
             os.makedirs('recordings', exist_ok=True)
             if out_path is None:
                 ts = time.strftime('%Y%m%d-%H%M%S')
@@ -243,18 +243,20 @@ class Camera:
             while self.frame is None and time.time() - start < 5:
                 time.sleep(0.1)
             if self.frame is None:
-                return False
+                return {"ok": False, "error": "no_frame", "message": "No camera frame available (camera may not be opened)"}
             h, w = self.frame.shape[:2]
-            writer = cv2.VideoWriter(out_path, fourcc, fps, (w, h))
+            try:
+                writer = cv2.VideoWriter(out_path, fourcc, fps, (w, h))
+            except Exception as e:
+                return {"ok": False, "error": "writer_exception", "message": str(e)}
             if not writer.isOpened():
-                print("Failed to open video writer for:", out_path)
-                return False
+                return {"ok": False, "error": "writer_not_opened", "message": f"Failed to open video writer for: {out_path}"}
             self.recording = True
             self.record_writer = writer
             self.record_start = time.time()
             self.frame_count = 0
             self.record_meta = {"start_time": self.record_start, "object_counts": defaultdict(int), "frames": 0, "filename": out_path}
-            return True
+            return {"ok": True, "filename": out_path}
 
     def stop_recording(self):
         with self.lock:
