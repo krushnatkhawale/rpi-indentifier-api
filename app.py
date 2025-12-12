@@ -98,4 +98,59 @@ def status():
 
 
 if __name__ == '__main__':
+    def _startup_checks():
+        print("Startup checks: verifying camera and recorder...")
+        cap = getattr(camera, 'cap', None)
+        try:
+            cap_opened = bool(cap.isOpened()) if cap is not None else False
+        except Exception:
+            cap_opened = False
+        print(f"Camera opened: {cap_opened}")
+
+        # wait for a frame from camera.get_frame_jpeg
+        frame_ok = False
+        for i in range(50):
+            jpg = camera.get_frame_jpeg()
+            if jpg:
+                frame_ok = True
+                break
+            time.sleep(0.1)
+        print(f"Frame available: {frame_ok}")
+
+        # Test recorder: try to start and immediately stop a short test recording
+        test_path = None
+        try:
+            res = camera.start_recording()
+            if isinstance(res, dict):
+                if res.get('ok'):
+                    test_path = res.get('filename')
+                    print(f"Test recording started: {test_path}")
+                    # give it a moment to write some frames
+                    time.sleep(0.5)
+                    meta = camera.stop_recording()
+                    if meta:
+                        print("Test recording stopped; metadata:", meta)
+                        # remove test files
+                        try:
+                            if test_path and os.path.exists(test_path):
+                                os.remove(test_path)
+                            metaf = test_path + '.json' if test_path else None
+                            if metaf and os.path.exists(metaf):
+                                os.remove(metaf)
+                        except Exception as e:
+                            print("Failed to remove test recording files:", e)
+                else:
+                    print("Failed to start test recording:", res)
+            else:
+                # legacy boolean
+                if res:
+                    print("Test recording started (legacy boolean). Stopping...")
+                    meta = camera.stop_recording()
+                    print("Test recording metadata:", meta)
+                else:
+                    print("Failed to start test recording (boolean False)")
+        except Exception as e:
+            print("Exception during test recording:", e)
+
+    _startup_checks()
     app.run(host='0.0.0.0', port=5000, threaded=True)
