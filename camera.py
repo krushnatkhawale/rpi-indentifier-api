@@ -237,7 +237,8 @@ class Camera:
             if out_path is None:
                 ts = time.strftime('%Y%m%d-%H%M%S')
                 out_path = os.path.join('recordings', f'recording-{ts}.mp4')
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            # Try multiple codecs to maximize compatibility on different systems
+            codecs_to_try = ['mp4v', 'XVID', 'MJPG']
             # wait for a frame to get size
             start = time.time()
             while self.frame is None and time.time() - start < 5:
@@ -245,12 +246,34 @@ class Camera:
             if self.frame is None:
                 return {"ok": False, "error": "no_frame", "message": "No camera frame available (camera may not be opened)"}
             h, w = self.frame.shape[:2]
+            # check capture is opened
             try:
-                writer = cv2.VideoWriter(out_path, fourcc, fps, (w, h))
-            except Exception as e:
-                return {"ok": False, "error": "writer_exception", "message": str(e)}
-            if not writer.isOpened():
-                return {"ok": False, "error": "writer_not_opened", "message": f"Failed to open video writer for: {out_path}"}
+                cap_opened = bool(self.cap.isOpened())
+            except Exception:
+                cap_opened = False
+
+            attempted = []
+            writer = None
+            for codec in codecs_to_try:
+                fourcc = cv2.VideoWriter_fourcc(*codec)
+                # try opening with same extension first; if MJPG choose .avi
+                candidate_path = out_path
+                if codec == 'MJPG' and out_path.lower().endswith('.mp4'):
+                    candidate_path = out_path[:-4] + '.avi'
+                try:
+                    wtr = cv2.VideoWriter(candidate_path, fourcc, fps, (w, h))
+                except Exception as e:
+                    attempted.append({'codec': codec, 'path': candidate_path, 'ok': False, 'error': str(e)})
+                    continue
+                ok = wtr.isOpened()
+                attempted.append({'codec': codec, 'path': candidate_path, 'ok': ok})
+                if ok:
+                    writer = wtr
+                    out_path = candidate_path
+                    break
+
+            if writer is None:
+                return {"ok": False, "error": "writer_not_opened", "message": f"Failed to open video writer for: {out_path}", "attempts": attempted, "cap_opened": cap_opened}
             self.recording = True
             self.record_writer = writer
             self.record_start = time.time()
