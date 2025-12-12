@@ -2,3 +2,6 @@ flask>=2.0
 opencv-python-headless>=4.5
 numpy
 requests
+# TensorFlow Lite runtime is recommended on Raspberry Pi. Install manually for your platform:
+#   pip install tflite-runtime
+# If you have full TensorFlow available (not recommended on Pi), the app will fall back to `tensorflow`.

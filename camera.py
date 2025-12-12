@@ -4,37 +4,6 @@ import os
 import json
 from collections import defaultdict
 
-import cv2
-import numpy as np
-
-MODEL_PROTO = os.path.join("models", "MobileNetSSD_deploy.prototxt")
-MODEL_WEIGHTS = os.path.join("models", "MobileNetSSD_deploy.caffemodel")
-
-CLASS_NAMES = [
-    "background",
-    "aeroplane",
-    "bicycle",
-    "bird",
-    "boat",
-    "bottle",
-    "bus",
-    "car",
-    "cat",
-    "chair",
-    "cow",
-    "diningtable",
-    "dog",
-    "horse",
-    "motorbike",
-    "person",
-    "pottedplant",
-    "sheep",
-    "sofa",
-    "train",
-    "tvmonitor",
-]
-
-
 class Camera:
     def __init__(self, src=0):
         self.src = src
@@ -48,57 +17,167 @@ class Camera:
         self.record_meta = None
         self.frame_count = 0
         self.thread = threading.Thread(target=self._capture_loop, daemon=True)
-        self.net = None
-        self.conf_threshold = 0.5
+        self.interpreter = None
+        self.input_details = None
+        self.output_details = None
+        self.conf_threshold = 0.4
         self._ensure_model()
         self.thread.start()
 
     def _ensure_model(self):
-        if os.path.exists(MODEL_PROTO) and os.path.exists(MODEL_WEIGHTS):
-            self.net = cv2.dnn.readNetFromCaffe(MODEL_PROTO, MODEL_WEIGHTS)
+        # Try to load TFLite model if present
+        try:
+            if Interpreter is not None and os.path.exists(TFLITE_MODEL):
+                try:
+                    self.interpreter = Interpreter(model_path=TFLITE_MODEL)
+                    self.interpreter.allocate_tensors()
+                    self.input_details = self.interpreter.get_input_details()
+                    self.output_details = self.interpreter.get_output_details()
+                    print("Loaded TFLite model:", TFLITE_MODEL)
+                    return
+                except Exception as e:
+                    print("Failed to initialize TFLite interpreter:", e)
+                    self.interpreter = None
+        except Exception as e:
+            print("Error while loading TFLite model:", e)
+
+        # If no TFLite, setup HOG+SVM fallback for person detection
+        try:
+            self.hog = cv2.HOGDescriptor()
+            self.hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
+            print("Using HOG fallback detector")
+        except Exception as e:
+            print("HOG fallback unavailable:", e)
+            self.hog = None
 
     def _capture_loop(self):
         while self.running:
-            ret, frame = self.cap.read()
-            if not ret:
-                time.sleep(0.1)
-                continue
-            annotated, detections = self._process_frame(frame)
-            with self.lock:
-                self.frame = annotated
-                if self.recording and self.record_writer is not None:
-                    self.record_writer.write(annotated)
-                    self.frame_count += 1
-                    # accumulate counts
-                    for cls, count in detections.items():
-                        self.record_meta["object_counts"][cls] += count
-            time.sleep(0.01)
+            try:
+                ret, frame = self.cap.read()
+                if not ret:
+                    time.sleep(0.1)
+                    continue
+                annotated, detections = self._process_frame(frame)
+                with self.lock:
+                    self.frame = annotated
+                    if self.recording and self.record_writer is not None:
+                        try:
+                            self.record_writer.write(annotated)
+                            self.frame_count += 1
+                            for cls, count in detections.items():
+                                self.record_meta["object_counts"][cls] += count
+                        except Exception as e:
+                            print("Error while writing frame to recorder:", e)
+                time.sleep(0.01)
+            except Exception as e:
+                print("Unexpected error in capture loop:", e)
+                time.sleep(0.5)
+
+    def _run_tflite(self, frame):
+        # Run inference with TFLite interpreter, return detections list of (label, score, (x1,y1,x2,y2))
+        detections = []
+        try:
+            inp = self.input_details[0]
+            h_in, w_in = inp['shape'][1], inp['shape'][2]
+            input_dtype = inp['dtype']
+
+            resized = cv2.resize(frame, (w_in, h_in))
+            if input_dtype == np.uint8:
+                input_data = np.expand_dims(resized, axis=0).astype(np.uint8)
+            else:
+                # float input
+                input_data = np.expand_dims(resized.astype(np.float32) / 255.0, axis=0)
+
+            self.interpreter.set_tensor(self.input_details[0]['index'], input_data)
+            self.interpreter.invoke()
+
+            # Typical TFLite SSD outputs: boxes, classes, scores, num
+            out_tensors = {od['name']: self.interpreter.get_tensor(od['index']) for od in self.output_details}
+
+            # Try to find outputs by common suffixes/names
+            boxes = None; classes = None; scores = None; num = None
+            for name, val in out_tensors.items():
+                lname = name.lower()
+                if 'box' in lname or 'location' in lname:
+                    boxes = val
+                elif 'class' in lname:
+                    classes = val
+                elif 'score' in lname or 'prob' in lname:
+                    scores = val
+                elif 'num' in lname:
+                    num = val
+
+            # Fallback by shape if name matching failed
+            if boxes is None:
+                for val in out_tensors.values():
+                    if val.ndim == 3 and val.shape[2] == 4:
+                        boxes = val
+                        break
+            if scores is None:
+                for val in out_tensors.values():
+                    if val.ndim == 2 and val.shape[1] >= 1:
+                        # heuristics: scores often shape (1, num)
+                        if val.dtype == np.float32 or val.dtype == np.float64:
+                            scores = val
+                            break
+            if classes is None:
+                for val in out_tensors.values():
+                    if val.dtype == np.float32 or val.dtype == np.float64 or val.dtype == np.int32:
+                        if val.ndim == 2 and val.shape[1] >= 1:
+                            classes = val
+                            break
+
+            if boxes is None or scores is None or classes is None:
+                return []
+
+            num_detections = int(num.flatten()[0]) if (num is not None) else scores.shape[1]
+
+            h, w = frame.shape[:2]
+            for i in range(num_detections):
+                score = float(scores[0, i])
+                if score < self.conf_threshold:
+                    continue
+                cls_id = int(classes[0, i])
+                # many models use 1-based class ids; ensure we map correctly
+                label = COCO_LABELS[cls_id] if cls_id < len(COCO_LABELS) else f"id:{cls_id}"
+                # boxes may be [ymin, xmin, ymax, xmax] normalized
+                box = boxes[0, i]
+                if box[0] >= 0 and box[2] >= 0:
+                    ymin, xmin, ymax, xmax = box
+                    x1 = int(xmin * w); y1 = int(ymin * h); x2 = int(xmax * w); y2 = int(ymax * h)
+                else:
+                    # unexpected format; skip
+                    continue
+                detections.append((label, score, (x1, y1, x2, y2)))
+        except Exception as e:
+            print("TFLite inference failed:", e)
+        return detections
 
     def _process_frame(self, frame):
         detections_count = defaultdict(int)
         annotated = frame.copy()
-        (h, w) = frame.shape[:2]
-        if self.net is not None:
-            blob = cv2.dnn.blobFromImage(cv2.resize(frame, (300, 300)), 0.007843, (300, 300), 127.5)
-            self.net.setInput(blob)
-            detections = self.net.forward()
-            for i in range(0, detections.shape[2]):
-                confidence = detections[0, 0, i, 2]
-                if confidence > self.conf_threshold:
-                    idx = int(detections[0, 0, i, 1])
-                    if idx >= len(CLASS_NAMES):
-                        continue
-                    label = CLASS_NAMES[idx]
-                    box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
-                    (startX, startY, endX, endY) = box.astype("int")
-                    cv2.rectangle(annotated, (startX, startY), (endX, endY), (0, 255, 0), 2)
-                    y = startY - 15 if startY - 15 > 15 else startY + 15
-                    cv2.putText(annotated, f"{label}: {confidence:.2f}", (startX, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+        try:
+            if self.interpreter is not None:
+                dets = self._run_tflite(frame)
+                for label, score, (x1, y1, x2, y2) in dets:
+                    cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                    cv2.putText(annotated, f"{label}: {score:.2f}", (x1, max(15, y1 - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                     detections_count[label] += 1
-        else:
-            # No model: annotate that detection is disabled
-            cv2.putText(annotated, "No detection model loaded", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                return annotated, detections_count
 
+            # Fallback: HOG person detector
+            if hasattr(self, 'hog') and self.hog is not None:
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                rects, weights = self.hog.detectMultiScale(gray, winStride=(8, 8), padding=(8, 8), scale=1.05)
+                for (x, y, w_rec, h_rec), weight in zip(rects, weights):
+                    cv2.rectangle(annotated, (x, y), (x + w_rec, y + h_rec), (255, 0, 0), 2)
+                    cv2.putText(annotated, f"person: {float(weight):.2f}", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+                    detections_count['person'] += 1
+                return annotated, detections_count
+
+            cv2.putText(annotated, "No detection model available", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        except Exception as e:
+            print("Error processing frame:", e)
         return annotated, detections_count
 
     def get_frame_jpeg(self):
@@ -140,7 +219,10 @@ class Camera:
                 return None
             self.recording = False
             if self.record_writer is not None:
-                self.record_writer.release()
+                try:
+                    self.record_writer.release()
+                except Exception as e:
+                    print("Error releasing writer:", e)
             end_time = time.time()
             duration = end_time - self.record_start if self.record_start else 0
             meta = {
@@ -153,8 +235,11 @@ class Camera:
             }
             # write metadata JSON next to file
             meta_path = meta["filename"] + ".json"
-            with open(meta_path, 'w') as f:
-                json.dump(meta, f, indent=2)
+            try:
+                with open(meta_path, 'w') as f:
+                    json.dump(meta, f, indent=2)
+            except Exception as e:
+                print("Failed to write metadata:", e)
             # clear writer and meta
             self.record_writer = None
             self.record_meta = None
@@ -167,7 +252,10 @@ class Camera:
         if self.thread.is_alive():
             self.thread.join(timeout=1)
         if self.cap is not None:
-            self.cap.release()
+            try:
+                self.cap.release()
+            except Exception:
+                pass
 
 
 camera = Camera()
