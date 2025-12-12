@@ -71,10 +71,28 @@ def recordings_file(filename):
 
 @app.route('/status')
 def status():
+    cap = getattr(camera, 'cap', None)
+    cap_opened = False
+    cap_width = None
+    cap_height = None
+    try:
+        if cap is not None:
+            cap_opened = bool(cap.isOpened())
+            try:
+                cap_width = cap.get(3)
+                cap_height = cap.get(4)
+            except Exception:
+                cap_width = cap_height = None
+    except Exception:
+        cap_opened = False
+
     info = {
         'recording': bool(camera.recording),
         'frame_available': camera.frame is not None,
-        'detector': 'tflite' if getattr(camera, 'interpreter', None) is not None else ('hog' if getattr(camera, 'hog', None) is not None else 'none')
+        'detector': 'tflite' if getattr(camera, 'interpreter', None) is not None else ('hog' if getattr(camera, 'hog', None) is not None else 'none'),
+        'cap_opened': cap_opened,
+        'cap_width': cap_width,
+        'cap_height': cap_height,
     }
     return jsonify(info)
 
